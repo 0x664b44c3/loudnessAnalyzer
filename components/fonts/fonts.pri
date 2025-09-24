@@ -5,6 +5,7 @@ SOURCES += \
 
 HEADERS += \
     $$PWD/font.h \
+    $$PWD/font5x5.h \
     components/fonts/fnt5x7.h \
     components/fonts/fnt8x16.h \
     components/fonts/font10x16.h \

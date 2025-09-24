@@ -4,7 +4,7 @@
  * SPDX-License-Identifier: CC0-1.0
  */
 
-
+#include "../components/fonts/font5x5.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <inttypes.h>
@@ -120,6 +120,97 @@ void console_task(void*p1)
         cursor_blink = 1-cursor_blink;
         doCursor(cursor_blink);
         vTaskDelay(250 / portTICK_PERIOD_MS);
+    }
+}
+
+const uint32_t fnt3x5[] = {
+    /* 0 */ 0x1f111f00,
+    /* 1 */ 0x80801f00,
+    /* 2 */ 0x17151d00,
+    /* 3 */ 0x15151f00,
+    /* 4 */ 0x1c041f00,
+    /* 5 */ 0x1d151700,
+    /* 6 */ 0x1f151700,
+    /* 7 */ 0x10101f00,
+    /* 8 */ 0x1f151f00,
+    /* 9 */ 0x1d151f00,
+    /* k */ 0x1f041b00,
+    /* . */ 0x80018000,
+    /* d */ 0x03051f00,
+    /* B */ 0x1f150a00,
+    /* - */ 0x04040000,
+};
+
+const char *bandLabels[] = {
+    "25",
+    "40",
+    "63",
+    "100",
+    "160",
+    "250",
+    "400",
+    "630",
+    "1k",
+    "1k6",
+    "2k5",
+    "4k",
+    "6k3",
+    "10k",
+    "16k",
+    NULL
+};
+int indexOf(char * haystack, char needle)
+{
+    int i=0;
+    while(*haystack)
+    {
+        if (*haystack == needle)
+            return i;
+        ++i;
+        ++haystack;
+    }
+    return -1;
+}
+void drawText5x5(int x, int y, char * text, int p)
+{
+    int l = strlen(text);
+    for(int i=0;i<l;++i)
+    {
+        for(int v=0;v<5;++v)
+        {
+            int c = text[i]-32;
+            c*=5;
+            uint8_t gd = font_5x5[c+v];
+            for(int u=0;u<5;++u)
+                {
+                if(gd&(0x10>>u))
+                    _setPx(x+i*6+u,y+v,p);
+            }
+        }
+    }
+}
+
+
+void drawTextTiny(int x, int y, char * text, int p)
+{
+    static const char *charmap = "0123456789k.dB";
+    int u=0;
+    char cc=0;
+    while((cc=*text++))
+    {
+        int c=indexOf(charmap, cc);
+        if(c<0)
+            continue;
+        uint32_t pixels = fnt3x5[c];
+        while(pixels&0xff000000)
+        {
+            for(int v=0;v<5;++v)
+                if(pixels & (0x10000000>>v))
+                    _setPx(x+u,y+v,p);
+            ++u;
+            pixels<<=8;
+        }
+        ++u;
     }
 }
 
@@ -532,8 +623,9 @@ void app (void*) {
     int bw = 64;
     int by=48;
 
+    drawGlyph(0,0,fntFont8x16,'L',1);
+    drawGlyph(0,20,fntFont8x16,'R',1);
     drawDisplayBox(bw*4,15,"True Peak ");
-
     drawDisplayBox(bw*0,by,"PGM LKFS M");
     drawDisplayBox(bw*1,by,"PGM Pk LU ");
     drawDisplayBox(bw*2,by,"LRA (1min)");
@@ -578,24 +670,60 @@ void app (void*) {
     drawCorrelationBox(128,34,126,"SD");
 
 
+    float dB_bar = 1.5;
+    float dB_MakeUp = 58*dB_bar;
 
-    uint32_t data[]={0x8badf00d,0xc0febabe};
-    uint16_t *partial = (uint16_t*)data;
-    for(int i=0;i<4;++i)
-        printf("Block %d: 0x%04x\n", i, *partial++);
 
+    // int marks[]={-10, -20, -30, -40, -60, -80, 0};
+    int marks[]={-12, -24, -36, -48, -60, -80, 0};
+    int u0 = ((float)marks[0] + dB_MakeUp)/ dB_bar * 4;
+
+    for(int u=u0;u<230;++u)
+        for(int v=0;v<7;++v)
+            _setPx(12+u, 13+v,1);
+
+
+    drawText5x5(2, 14, "dBFS", 1);
+    for(int i=0;marks[i];++i)
+    {
+        int dB = marks[i];
+        int x = (((float)dB) + dB_MakeUp)/ dB_bar*4.0;
+        // sx*=4;
+        sprintf(txt, "%d", dB);
+        for(int v=0;v<7;++v)
+            if((v&1)==0)
+            _setPx(x+12, 13+v,1);
+        drawText5x5(x+14, 14, txt,(i>0));
+    }
+
+
+    //label X axis of RTA
+    for(int band=0;band<15; ++band)
+    {
+        char * text = bandLabels[band];
+        int l = strlen(text);
+        int u = -l*2+1;
+        drawTextTiny(band*16 + 24 + u, 221, text, 1);
+    }
+
+    //draw Y axis labels for RTA
+    for(int lvl=0;lvl<30;lvl+=3)
+    {
+        float threshold = ((float)lvl)*2+3;
+        int y = 100 + lvl * 4;
+        sprintf(txt, "%2.0f", threshold);
+        drawText5x5(0,y-1,txt,1);
+        for(int u=6;u<30*8;u+=8)
+            _setPx(u+14,y+1,1);
+    }
+    int cycle=0;
     while(1) {
+        ++cycle;
         octr=bctr;
         bctr = nBuff;
         if (bctr>octr) {
             fAudio = ((bctr-octr) * 480) * 1000 / 100;
         }
-
-        moveCursor(0,0);
-
-        cons_write("L");
-        moveCursor(1,0);
-        cons_write("R");
 
         float rms_l = 10*log10(rms[0]);
         float rms_r = 10*log10(rms[1]);
@@ -616,11 +744,12 @@ void app (void*) {
             peakHoldBar0=57;
         if(peakHoldBar1>57)
             peakHoldBar1=57;
+        int dither=(cycle&1)?2:3;
         for(int i=0;i<58;++i)
         {
-            float thresh = ((float)i) * 1.5 - 87;
-            drawBarX(12 + i*4,  0, 12, ((peakHoldBar0==i)||(rms_l >= thresh))?1:(pk_l>=thresh)?2:5);
-            drawBarX(12 + i*4, 19, 12, ((peakHoldBar1==i)||(rms_r >= thresh))?1:(pk_r>=thresh)?2:4);
+            float thresh = ((float)i) * dB_bar - dB_MakeUp;
+            drawBarX(12 + i*4,  1, 11, ((peakHoldBar0==i)||(rms_l >= thresh))?1:(pk_l>=thresh)?dither:5);
+            drawBarX(12 + i*4, 21, 11, ((peakHoldBar1==i)||(rms_r >= thresh))?1:(pk_r>=thresh)?dither:4);
         }
         moveCursor(2,0);
         float stDev= LUFS_avg_r - LUFS_avg_l;
@@ -687,18 +816,18 @@ void app (void*) {
             float db = 10 * log10(rtaLevels[band]);
             for(int lvl=0;lvl<30;++lvl)
             {
-                float threshold = ((float)lvl)*2;
+                float threshold = ((float)lvl)*2+3;
                 int onOff = (db+threshold>=0);
-                int x = band*10;
+                int x = band*8+14;
                 int y = 100 + lvl * 4;
-                for(int u=0;u<6;++u)
-                    for(int v=0;v<2;++v)
+                for(int u=0;u<5;++u)
+                    for(int v=0;v<3;++v)
                         _setPx(x+u,v+y,onOff|((v==1)&&(u&1)));
             }
         }
         ++blnk;
         // esp_task_wdt_reset();
-        vTaskDelay(10 / portTICK_PERIOD_MS);
+        vTaskDelay(10/portTICK_PERIOD_MS);
         taskYIELD();
     }
 
