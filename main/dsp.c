@@ -140,8 +140,8 @@ static int currentRecBuffer = 0;
 static int currentDspResult=0;
 
 float correlationHist[40];
-int tpkBlockHist[10];
-int tpkHist[SHORT_HIST_LEN];
+float tpkBlockHist[10];
+float tpkHist[SHORT_HIST_LEN];
 int chPkBlkHist[2][10];
 int chPkHist[2][10];
 
@@ -190,12 +190,29 @@ static int16_t upsampleBuffer[chunkSize*4];
 
 //buffer for the upsampler coefficients (time-memory tradeoff: store 12 permutations of the factors for each phase (2kBytes of coeffs)
 int16_t polyphaseCoeff[12*4][16]; //only 12 coefficients but do alignment for optimization of interpolator
-
+float   polyphaseCoeffF32[4][12][16]; //only 12 coefficients but do alignment for optimization of interpolator
 
 typedef struct {
     int16_t delay[ITU_POLYPHASE_TAPS];
     int ptr;
 }polyPhase16_t ;
+
+
+typedef struct {
+    float delay[ITU_POLYPHASE_TAPS];
+    int ptr;
+}polyPhaseF32_t ;
+
+
+
+//two upamplers (one per channel)
+polyPhase16_t upsamplers[2];
+polyPhaseF32_t upsamplersF32[2];
+static float upsampleBufferF[480*4];
+static float tpkLPF[5];
+static float tpk_w1[2];
+static float tpk_w2[2];
+
 
 void preloadInterpolatorCoeffs() {
     for (int perm = 0;perm<12;++perm)
@@ -210,10 +227,12 @@ void preloadInterpolatorCoeffs() {
                     k0=0;
                 int coeff = c0 * 32767.0;
                 int block = (11-perm) * 4 + 3 - phase;
+                polyphaseCoeffF32[3-phase][11-perm][i] = c0;
                 polyphaseCoeff[block][i] = coeff&0xffff;
             }
         }
     }
+    dsps_biquad_gen_lpf_f32(&tpkLPF, 0.125, 1);
 }
 void initInterpolatorCtx(polyPhase16_t*ppi, int N)
 {
@@ -244,12 +263,42 @@ void IRAM_ATTR polyphase_upsampler_x4_i16(int16_t * in, int16_t * out, int inSiz
     filter->ptr = wp;
 }
 
-//two upamplers (one per channel)
-polyPhase16_t upsamplers[2];
 
+void IRAM_ATTR polyphase_upsampler_x4_f32(float * in, float * out, int inSize, polyPhaseF32_t *filter)
+{
+    int wp = filter->ptr;
+    float acc=0;
+    for(int i=0;i<inSize;++i)
+    {
+        filter->delay[wp] = *in++;
+        dsps_dotprod_f32(filter->delay, polyphaseCoeffF32[0][wp], &acc, ITU_POLYPHASE_TAPS);
+        *out++=acc;
+        dsps_dotprod_f32(filter->delay, polyphaseCoeffF32[1][wp], &acc, ITU_POLYPHASE_TAPS);
+        *out++=acc;
+        dsps_dotprod_f32(filter->delay, polyphaseCoeffF32[2][wp], &acc, ITU_POLYPHASE_TAPS);
+        *out++=acc;
+        dsps_dotprod_f32(filter->delay, polyphaseCoeffF32[3][wp], &acc, ITU_POLYPHASE_TAPS);
+        *out++=acc;
+        ++wp;
+        if(wp==ITU_POLYPHASE_TAPS)
+            wp=0;
+    }
+    filter->ptr = wp;
+}
 
-
-
+float IRAM_ATTR calcTruePeakF32(float * ch0, float * ch1)
+{
+    float maxPeak=0;
+    polyphase_upsampler_x4_f32(ch0, upsampleBufferF, chunkSize,  &upsamplersF32[0]);
+    dsps_biquad_f32_ae32(upsampleBufferF, upsampleBufferF, 4 * chunkSize, tpkLPF, tpk_w1);
+    for(int i=0;i<chunkSize*4;++i)
+        maxPeak=CMAX(maxPeak, fabs(upsampleBufferF[i]));
+    polyphase_upsampler_x4_f32(ch1, upsampleBufferF, chunkSize,  &upsamplersF32[1]);
+    dsps_biquad_f32_ae32(upsampleBufferF, upsampleBufferF, 4 * chunkSize, tpkLPF, tpk_w2);
+    for(int i=0;i<chunkSize*4;++i)
+        maxPeak=CMAX(maxPeak, fabs(upsampleBufferF[i]));
+    return maxPeak;
+}
 
 //split stereo buffer 32bit into 2 buffer of scaled 16bit
 int IRAM_ATTR calcTruePeak(int32_t *inputBuffer, int16_t gainFactor, int N)
@@ -402,6 +451,9 @@ static void IRAM_ATTR dsp_task(void*)
     for(int c=0;c<3;++c)
         for(int i=0;i<SHORT_HIST_LEN;++i)
             lvlShortHistory[c][i] = -99;
+
+    upsamplersF32[0].ptr=0;
+    upsamplersF32[1].ptr=0;
     preloadInterpolatorCoeffs();
     initInterpolatorCtx(upsamplers,2);
 
@@ -425,7 +477,9 @@ static void IRAM_ATTR dsp_task(void*)
         copyChannelData(src, processingBuffer, chunkSize, &dPeak[0], &dPeak[1]);
         calcRmsSegment(processingBuffer, gain, 2, segmentCtr);
 
-        int tpk =  calcTruePeak(src, 0x7fff/4, chunkSize);
+        // int tpk =  calcTruePeak(src, 0x7fff/4, chunkSize);
+
+        float tpk = calcTruePeakF32(processingBuffer[0], processingBuffer[1]);
 
         chPkBlkHist[0][pkCtr] = dPeak[0];
         chPkBlkHist[1][pkCtr] = dPeak[1];
@@ -518,7 +572,7 @@ static void IRAM_ATTR dsp_task(void*)
             accu=0;
             float accu2=0;
             float accu3=0;
-            int maxPeak=0;
+            float maxPeak=0;
             for(int i=0;i<SHORT_HIST_LEN;++i)
             {
                 maxPeak = CMAX(maxPeak, tpkHist[i]);
@@ -552,7 +606,7 @@ static void IRAM_ATTR dsp_task(void*)
             }
 
             //NOTE: add correction factors here
-            truePeak = 20 * log10((float)maxPeak / 32767.0) + 12.04;
+            truePeak = 20 * log10(maxPeak);
 
             int p=ungatedHistPtr;
             accu=0;

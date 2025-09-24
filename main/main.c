@@ -641,7 +641,7 @@ void app (void*) {
             drawBar( 128 + 72+4.0*bar, 36, 8,(bar==0)||(stDev >= thresh_D));
         }
 
-        float tpk = truePeak + 15;
+        float tpk = truePeak;
         if(tpk>-99)
             sprintf(txt, "%+05.1f", tpk);
         else
