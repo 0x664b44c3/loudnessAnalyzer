@@ -114,7 +114,7 @@ static i2s_chan_handle_t rx_chan;
 
 volatile int nBuff  = 0; //< used for stats
 
-static int32_t *rec_buffer[INPUT_BUFFERS];
+int32_t *rec_buffer[INPUT_BUFFERS];
 
 TaskHandle_t dspTask = NULL;
 TaskHandle_t recTask = NULL;
@@ -174,9 +174,9 @@ static void IRAM_ATTR audio_rx_task(void*) {
 }
 
 static const float rtaBands[] = {   20,   25, 31.5,   40,   50,   63,   80,  100,
-                                 125,  160,  200,  250,  315,  400,  500,  630,
-                                 800, 1000, 1250, 1600, 2000, 2500, 3150, 4000,
-                                 5000, 6300, 8000,10000,12500,16000,20000,    0};
+                                   125,  160,  200,  250,  315,  400,  500,  630,
+                                   800, 1000, 1250, 1600, 2000, 2500, 3150, 4000,
+                                  5000, 6300, 8000,10000,12500,16000,20000,    0};
 
 static const float terz_Q = 4.3;
 
@@ -392,18 +392,18 @@ static void IRAM_ATTR calcRTA()
         rtaChannels[band].rta_segments[rtaCtr] = accu / ((float)chunkSize);// * 0.7071067811865475; //accomodate for the 3dB from mixdown
     }
 
-    // if ((rtaCtr & 3) == 0) // 25Hz
-    // {
+    if ((rtaCtr & 3) == 0) // 25Hz
+    {
         for(int band=0;band<31;++band)
         {
             accu=0;
-            for(int bin=0;bin<8;++bin)
+            for(int bin=0;bin<16;++bin)
                 accu+=rtaChannels[band].rta_segments[bin];
             rtaLevels[band] = accu * .0625; // 16 bins
         }
-    // }
+    }
     rtaCtr++;
-    if(rtaCtr==8)
+    if(rtaCtr==16)
         rtaCtr=0;
 }
 
@@ -446,7 +446,7 @@ static void IRAM_ATTR dsp_task(void*)
 
     int32_t * bp=NULL;
     int ungatedHistPtr=0;
-    float gain = pow(10, 15.0/20.0);
+    float gain = pow(10, 0.0/20.0);
 
     for(int c=0;c<3;++c)
         for(int i=0;i<SHORT_HIST_LEN;++i)
@@ -494,7 +494,7 @@ static void IRAM_ATTR dsp_task(void*)
 
         if(pkCtr==10) {
             pkCtr=0;
-            chPkHist[0][pkHoldCtr] = dPeak[0];
+            chPkHist[0][pkHoldCtr]   = dPeak[0];
             chPkHist[1][pkHoldCtr++] = dPeak[1];
             if(pkHoldCtr==10)
                 pkHoldCtr = 0;

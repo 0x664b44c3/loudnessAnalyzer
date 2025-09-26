@@ -69,29 +69,26 @@ static uint8_t display_outBufB[BUFFER_SIZE] = {0};
 #endif
 void blitBuffer(gBuff_t  * buf, int x0, int y0)
 {
-    const int loadsPerWord = 32/DISPLAY_PPB;
-    uint32_t srcMask = (0xffffffff >> (32 - DISPLAY_PPB));
-    int dx=0;
-    //linewise copy
+    const unsigned char srcMask = (0xff >> (8- DISPLAY_PPB));
+    uint32_t* bd = buf->d;
+    const int loadsPerByte = 8/DISPLAY_PPB;
     for(int v=0;v<buf->h;++v)
     {
-        dx = x0;
-        uint32_t * src = &buf->d[buf->s * v]; //first word of source buffer
-        int offset = buffer_stride * v;
-        for(int i=0;(i<buf->s) && (dx<DISPLAY_WIDTH);++i)
+        int offset = (y0+v) * buffer_stride;
+        uint32_t *d=bd;
+        bd+=buf->s;
+        for (int i=0;i<buf->s;++i) //bytewide load
         {
-            uint32_t d = *src++;
-            for(int j=0;j<loadsPerWord;++j)
+            uint32_t dd = *d++;
+            for(int j=0;j<loadsPerByte*4;++j)
             {
-                display_outBuf[(offset++)^2] = 0xc0 | (d & srcMask);
-                d>>=DISPLAY_PPB;
-                dx+=DISPLAY_PPB;
-                if(dx>=DISPLAY_WIDTH) // reached end of active line
-                    break;
+                display_outBuf[(offset++)^2] = 0xc0 | (dd & srcMask);
+                dd>>=DISPLAY_PPB;
             }
         }
     }
 }
+
 
 void configure_io (int *pins, int count) {
     for (int i=0;i<count;++i)

@@ -49,6 +49,15 @@ enum {
 
 gBuff_t gfxBuffer[8];
 
+void buffer_setPx(gBuff_t * buf, int x, int y, int c)
+{
+    int offset = buf->s * y + x/32;
+    if(c)
+        buf->d[offset] |= 0x00000001ul<<(x&31);
+    else
+        buf->d[offset] &= ~(0x00000001ul<<(x&31));
+}
+
 void buffer_puttext(gBuff_t * buffer, int row, int col, const char * txt, int len, int fontAttr)
 {
     struct fontInfo *fi = &fonts[fontAttr & fntTypeFaceMask];
@@ -171,7 +180,7 @@ int indexOf(char * haystack, char needle)
     }
     return -1;
 }
-void drawText5x5(int x, int y, char * text, int p)
+void drawText5x5(gBuff_t *buffer, int x, int y, char * text, int p)
 {
     int l = strlen(text);
     for(int i=0;i<l;++i)
@@ -181,11 +190,18 @@ void drawText5x5(int x, int y, char * text, int p)
             int c = text[i]-32;
             c*=5;
             uint8_t gd = font_5x5[c+v];
-            for(int u=0;u<5;++u)
+            if (buffer)
+                for(int u=0;u<5;++u)
                 {
-                if(gd&(0x10>>u))
-                    _setPx(x+i*6+u,y+v,p);
-            }
+                    if(gd&(0x10>>u))
+                        buffer_setPx(buffer, x+i*6+u,y+v,p);
+                }
+            else
+                for(int u=0;u<5;++u)
+                {
+                    if(gd&(0x10>>u))
+                        _setPx(x+i*6+u,y+v,p);
+                }
         }
     }
 }
@@ -491,7 +507,7 @@ void ATTR_IRAM drawBarX(int x, int y, int h, int m)
                 on = (v==h-1);
                 break;
             }
-                _setPx(x+u, y+v, on);
+            _setPx(x+u, y+v, on);
         }
 }
 void ATTR_IRAM drawBar(int x, int y, int h, int on)
@@ -503,6 +519,100 @@ void ATTR_IRAM drawBar(int x, int y, int h, int on)
     }
 }
 
+void drawRTAGraticule(int x0, int y0, int s)
+{
+    char txt[16];
+
+    //label X axis of RTA
+    for(int band=0;band<15; ++band)
+    {
+        char * text = bandLabels[band];
+        int l = strlen(text);
+        int u = -l*2+1;
+        int x = x0 + 14 + 5/2 + s + band*s*2 + u;// first bar + 2 + s+3 + ;
+        if (x>=310)
+            break;
+        drawTextTiny(x, y0 + 121, text, 1);
+    }
+
+    //draw Y axis labels for RTA
+    for(int lvl=0;lvl<30;lvl+=3)
+    {
+        float threshold = ((float)lvl)*2+3;
+        int y = y0 + lvl * 4;
+        sprintf(txt, "%2.0f", threshold);
+        drawText5x5(NULL, x0,y-1,txt,1);
+        if(s>=8)
+            for(int u=6;u<30*s;u+=s)
+                _setPx(x0+14+u,y+y0+1,1);
+    }
+}
+void IRAM_ATTR drawRTA(int x0, int y0, int s) {
+    for(int band=0;band<31;++band)
+    {
+        float db = 10 * log10(rtaLevels[band]);
+        for(int lvl=0;lvl<30;++lvl)
+        {
+            float threshold = ((float)lvl)*2+3;
+            int onOff = (db+threshold>=0);
+            int x = x0 + 14 + band*s;
+            if(x>=315)
+                break;
+            int y = y0 + lvl * 4;
+            for(int u=0;u<5;++u)
+                for(int v=0;v<3;++v)
+                    _setPx(x+u,v+y,onOff|((v==1)&&(u&1)));
+        }
+    }
+}
+
+void drawGonioGraticule(int x0, int y0)
+{
+
+    for(int i=0;i<128;i+=2)
+    {
+        _setPx(x0+127-i,y0+i,1);
+        _setPx(x0+i,y0+i,1);
+        _setPx(x0+64,y0+i,1);
+    }
+}
+extern int32_t *rec_buffer[];
+void IRAM_ATTR drawGonioWFM(int32_t * stereoBuffer, int N, int clr)
+{
+    int32_t pkMax = digiPeakHold[0];
+     if (digiPeak[1]>pkMax)
+         pkMax = digiPeakHold[1];
+    pkMax /= 32768;
+    if (pkMax<128)
+         pkMax = 128;
+    int32_t matrix[] = {23170,23170,-23170,23170};
+    if(clr)
+        for (int v=0;v<128;++v)
+            for (int u=0;u<128;++u)
+                _setPx(u,100+v,(((u==v)||(127-u==v))&((u&1)==0))?1:0);
+    for(int i=0;i<N;++i)
+    {
+        int32_t ch1 = *stereoBuffer++ / 32768;
+        int32_t ch0 = *stereoBuffer++ / 32768;
+        int u =   ch0 * matrix[0]
+                + ch1 * matrix[2];
+        int v =   ch0 * matrix[1]
+               +  ch1 * matrix[3];
+        u/=512.0;
+        v/=512.0;
+        u/=pkMax;
+        v/=pkMax;
+        if (u<-63)
+            u=-63;
+        if (u>63)
+            u=63;
+        if (v<-63)
+            v=-63;
+        if (v>63)
+            v=63;
+        _setPx(64+u,164-v,1);
+    }
+}
 void app (void*) {
 
     gpio_set_direction(4, GPIO_MODE_OUTPUT);
@@ -623,9 +733,20 @@ void app (void*) {
     int bw = 64;
     int by=48;
 
+    // clearBuffer(0);
+    // copyBuffer(0);
+    // memset(gfxBuffer[0].d, 0x0, gfxBuffer[0].s * gfxBuffer[0].h * 4);
+    // for (int i=0;i<256;++i)
+    // {
+    //     buffer_setPx(gfxBuffer, i, i, 1);
+    //     buffer_setPx(gfxBuffer, 255-i, i, 1);
+    // }
+    // blitBuffer(gfxBuffer, 0,0);
+
     drawGlyph(0,0,fntFont8x16,'L',1);
     drawGlyph(0,20,fntFont8x16,'R',1);
-    drawDisplayBox(bw*4,15,"True Peak ");
+    drawDisplayBox(bw*4, 15,"True Peak ");
+    // drawDisplayBox(bw*4, 0,"unassigned");
     drawDisplayBox(bw*0,by,"PGM LKFS M");
     drawDisplayBox(bw*1,by,"PGM Pk LU ");
     drawDisplayBox(bw*2,by,"LRA (1min)");
@@ -670,12 +791,13 @@ void app (void*) {
     drawCorrelationBox(128,34,126,"SD");
 
 
-    float dB_bar = 1.5;
+    float dB_bar = 1;
     float dB_MakeUp = 58*dB_bar;
 
 
     // int marks[]={-10, -20, -30, -40, -60, -80, 0};
-    int marks[]={-12, -24, -36, -48, -60, -80, 0};
+    //int marks[]={-12, -24, -36, -48, -60, -80, 0};
+    int marks[]={-10, -20, -30, -40, -50, 0};
     int u0 = ((float)marks[0] + dB_MakeUp)/ dB_bar * 4;
 
     for(int u=u0;u<230;++u)
@@ -683,39 +805,21 @@ void app (void*) {
             _setPx(12+u, 13+v,1);
 
 
-    drawText5x5(2, 14, "dBFS", 1);
+    drawText5x5(NULL, 2, 14, "dBFS", 1);
     for(int i=0;marks[i];++i)
     {
         int dB = marks[i];
         int x = (((float)dB) + dB_MakeUp)/ dB_bar*4.0;
-        // sx*=4;
         sprintf(txt, "%d", dB);
         for(int v=0;v<7;++v)
             if((v&1)==0)
-            _setPx(x+12, 13+v,1);
-        drawText5x5(x+14, 14, txt,(i>0));
+                _setPx(x+12, 13+v,1);
+        drawText5x5(NULL, x+14, 14, txt,(i>0));
     }
 
 
-    //label X axis of RTA
-    for(int band=0;band<15; ++band)
-    {
-        char * text = bandLabels[band];
-        int l = strlen(text);
-        int u = -l*2+1;
-        drawTextTiny(band*16 + 24 + u, 221, text, 1);
-    }
-
-    //draw Y axis labels for RTA
-    for(int lvl=0;lvl<30;lvl+=3)
-    {
-        float threshold = ((float)lvl)*2+3;
-        int y = 100 + lvl * 4;
-        sprintf(txt, "%2.0f", threshold);
-        drawText5x5(0,y-1,txt,1);
-        for(int u=6;u<30*8;u+=8)
-            _setPx(u+14,y+1,1);
-    }
+    drawGonioGraticule(0, 100);
+    drawRTAGraticule(128,100,6);
     int cycle=0;
     while(1) {
         ++cycle;
@@ -730,21 +834,21 @@ void app (void*) {
         // float rms_m = 10*log10(rms[0]+rms[1]);
 
         //adjust for gain on the fly
-        float pk_l = 20*log10(digiPeak[0] / 2147483392.0) + 15;
-        float pk_r = 20*log10(digiPeak[1] / 2147483392.0) + 15;
-        float pkh_l = 20*log10(digiPeakHold[0] / 2147483392.0) + 15;
-        float pkh_r = 20*log10(digiPeakHold[1] / 2147483392.0) + 15;
+        float pk_l = 20*log10(digiPeak[0]      / 2147483392.0);
+        float pk_r = 20*log10(digiPeak[1]      / 2147483392.0);
+        float pkh_l = 20*log10(digiPeakHold[0] / 2147483392.0);
+        float pkh_r = 20*log10(digiPeakHold[1] / 2147483392.0);
         int peakHoldBar0 = 0;
         int peakHoldBar1 = 0;
         if(pkh_l>-60)
-            peakHoldBar0 = (pkh_l+87.0) / 1.5;
+            peakHoldBar0 = (pkh_l+dB_MakeUp) / dB_bar;
         if(pkh_r>-60)
-            peakHoldBar1 = (pkh_r+87.0) / 1.5;
+            peakHoldBar1 = (pkh_r+dB_MakeUp) / dB_bar;
         if(peakHoldBar0>57)
             peakHoldBar0=57;
         if(peakHoldBar1>57)
             peakHoldBar1=57;
-        int dither=(cycle&1)?2:3;
+        int dither=2;//(cycle&1)?2:3;
         for(int i=0;i<58;++i)
         {
             float thresh = ((float)i) * dB_bar - dB_MakeUp;
@@ -811,20 +915,8 @@ void app (void*) {
             strcpy(txt,"---.-");
         drawText(bw*4+1,by+11, fntFont12x16, txt,1);
 
-        for(int band=0;band<31;++band)
-        {
-            float db = 10 * log10(rtaLevels[band]);
-            for(int lvl=0;lvl<30;++lvl)
-            {
-                float threshold = ((float)lvl)*2+3;
-                int onOff = (db+threshold>=0);
-                int x = band*8+14;
-                int y = 100 + lvl * 4;
-                for(int u=0;u<5;++u)
-                    for(int v=0;v<3;++v)
-                        _setPx(x+u,v+y,onOff|((v==1)&&(u&1)));
-            }
-        }
+        drawRTA(128,100,6);
+        drawGonioWFM(rec_buffer[blnk&3], 480, (blnk&1) == 0);
         ++blnk;
         // esp_task_wdt_reset();
         vTaskDelay(10/portTICK_PERIOD_MS);
